@@ -60,7 +60,7 @@ Same change reasons as [`mcp-tool-card-diff`](https://github.com/mizcausevic-dev
 ## How it handles edge cases
 
 - **New card** (file absent from a verified base commit) → no diff, exits 0, sets `new-card=true`.
-- **Malformed previous version, missing base commit, or invalid SHA** → fails closed.
+- **Malformed base or current card, missing base commit, or invalid SHA** → fails closed. The Action checks fields used by the diff; full schema validation is a separate gate.
 - **Invalid or escaping card path** → fails before reading the file.
 - **Card-path doesn't exist on disk** → exits 1 with a clear error.
 - **Non-PR context** (push, manual dispatch) → skips PR comment; still emits diff to logs.

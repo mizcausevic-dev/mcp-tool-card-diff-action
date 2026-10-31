@@ -60,6 +60,35 @@ function validCardPath(path: string): boolean {
     path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** Check fields consumed by the diff; this is not a full Tool Card schema validator. */
+function isDiffableToolCard(value: unknown): value is ToolCard {
+  if (!isRecord(value) || !isRecord(value.tool) || !isRecord(value.schema) ||
+      !isRecord(value.safety) || !isRecord(value.audit)) return false;
+  const tool = value.tool;
+  const safety = value.safety;
+  const audit = value.audit;
+  if (typeof value.tool_card_version !== "string" ||
+      !["server_id", "name", "version", "mcp_server_uri", "description"].every((key) => typeof tool[key] === "string") ||
+      !["read", "mutating", "external", "destructive"].includes(String(safety.side_effect_class)) ||
+      !["none", "low", "medium", "high"].includes(String(safety.pii_exposure)) ||
+      !["none", "reads_secret_material", "writes_secret_material", "handles_keys"].includes(String(safety.secrets_exposure)) ||
+      !["reversible", "rate_limited", "human_approval_required"].every((key) => typeof safety[key] === "boolean")) return false;
+  if (safety.external_systems !== undefined && !isStringArray(safety.external_systems)) return false;
+  if (safety.refusal_modes !== undefined && !isStringArray(safety.refusal_modes)) return false;
+  if (audit.log_locations !== undefined && !isStringArray(audit.log_locations)) return false;
+  if (audit.retention_days !== undefined && (typeof audit.retention_days !== "number" || !Number.isFinite(audit.retention_days))) return false;
+  return value.tested_with === undefined || (Array.isArray(value.tested_with) && value.tested_with.every((entry) =>
+    isRecord(entry) && typeof entry.provider === "string" && typeof entry.model === "string" && typeof entry.passed === "boolean"));
+}
+
 function cardFileWithinWorkspace(path: string, workspace: string): boolean {
   const root = realpathSync(workspace);
   const file = resolve(root, path);
@@ -124,15 +153,24 @@ export async function run(env: RunnerEnv): Promise<RunnerResult> {
   }
   if (prevRaw !== null) {
     try {
-      prev = JSON.parse(prevRaw) as ToolCard;
+      const parsed: unknown = JSON.parse(prevRaw);
+      if (!isDiffableToolCard(parsed)) throw new Error("invalid Tool Card shape");
+      prev = parsed;
     } catch {
       write("::error::the Tool Card at the base commit is malformed; comparison cannot be trusted.");
       return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid base card" };
     }
   }
 
-  const nextRaw = read(cardLocation);
-  const next = JSON.parse(nextRaw) as ToolCard;
+  let next: ToolCard;
+  try {
+    const parsed: unknown = JSON.parse(read(cardLocation));
+    if (!isDiffableToolCard(parsed)) throw new Error("invalid Tool Card shape");
+    next = parsed;
+  } catch {
+    write("::error::the current Tool Card is malformed; comparison cannot be trusted.");
+    return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid current card" };
+  }
 
   const newCard = prev === null;
   const diff = newCard ? NULL_DIFF : diffToolCards(prev as ToolCard, next);

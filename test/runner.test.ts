@@ -108,6 +108,22 @@ describe("runner.run", () => {
     expect(r.reason).toBe("invalid base card");
   });
 
+  it("does not mistake JSON null at the base commit for a new card", async () => {
+    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: "null" }));
+    expect(r.exitCode).toBe(1);
+    expect(r.newCard).toBe(false);
+    expect(r.reason).toBe("invalid base card");
+  });
+
+  it("does not pass a newly added card whose JSON is null or lacks safety fields", async () => {
+    for (const current of ["null", "{}", JSON.stringify({ tool_card_version: "0.1", tool: {}, schema: {}, safety: {}, audit: {} })]) {
+      const r = await run(makeEnv({ cardContent: current, prevContent: null }));
+      expect(r.exitCode).toBe(1);
+      expect(r.newCard).toBe(false);
+      expect(r.reason).toBe("invalid current card");
+    }
+  });
+
   it("fails closed when the base SHA is missing or contains command syntax", async () => {
     const missing = await run(makeEnv({ cardContent: V1_CONTENT, omitBaseSha: true }));
     const injected = await run(makeEnv({ cardContent: V1_CONTENT, baseSha: `${BASE_SHA}&echo unsafe` }));
