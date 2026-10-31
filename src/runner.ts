@@ -85,8 +85,7 @@ function isDiffableToolCard(value: unknown): value is ToolCard {
   if (safety.refusal_modes !== undefined && !isStringArray(safety.refusal_modes)) return false;
   if (audit.log_locations !== undefined && !isStringArray(audit.log_locations)) return false;
   if (audit.retention_days !== undefined && (typeof audit.retention_days !== "number" || !Number.isFinite(audit.retention_days))) return false;
-  return value.tested_with === undefined || (Array.isArray(value.tested_with) && value.tested_with.every((entry) =>
-    isRecord(entry) && typeof entry.provider === "string" && typeof entry.model === "string" && typeof entry.passed === "boolean"));
+  return value.tested_with === undefined || (Array.isArray(value.tested_with) && value.tested_with.every(isRecord));
 }
 
 function cardFileWithinWorkspace(path: string, workspace: string): boolean {

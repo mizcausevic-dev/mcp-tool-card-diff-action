@@ -15,6 +15,8 @@ const V2_NONBREAKING = `${here}/../fixtures/card-v2-nonbreaking.json`;
 const V1_CONTENT = readFileSync(V1, "utf8");
 const V2_BREAKING_CONTENT = readFileSync(V2_BREAKING, "utf8");
 const V2_NONBREAKING_CONTENT = readFileSync(V2_NONBREAKING, "utf8");
+// Copied from mcp-tool-card-spec/examples/billing-lookup.json (v0.1 schema).
+const OFFICIAL_SPEC_CARD = readFileSync(`${here}/../fixtures/official-billing-lookup.json`, "utf8");
 const BASE_SHA = "a".repeat(40);
 const OVERRIDE_SHA = "b".repeat(40);
 
@@ -122,6 +124,12 @@ describe("runner.run", () => {
       expect(r.newCard).toBe(false);
       expect(r.reason).toBe("invalid current card");
     }
+  });
+
+  it("accepts the published Tool Card spec example as a newly added card", async () => {
+    const r = await run(makeEnv({ cardContent: OFFICIAL_SPEC_CARD, prevContent: null }));
+    expect(r.exitCode).toBe(0);
+    expect(r.newCard).toBe(true);
   });
 
   it("fails closed when the base SHA is missing or contains command syntax", async () => {
