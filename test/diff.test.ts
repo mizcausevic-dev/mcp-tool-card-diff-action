@@ -257,10 +257,13 @@ describe("formatters", () => {
     const after = structuredClone(before);
     const entry = after.tested_with?.[0];
     if (!entry || !("llm" in entry)) throw new Error("official fixture is missing tested_with[0]");
-    entry.test_suite_uri = "https://example.invalid/suite|spoof\n| forged | row";
+    entry.test_suite_uri = "https://example.invalid/suite|spoof\n| forged | row ![track](https://tracker.invalid/p) [click](https://evil.invalid)";
     const markdown = toMarkdown(diffToolCards(before, after));
     expect(markdown).toContain("&#124;spoof");
     expect(markdown).not.toContain("\n| forged | row");
+    expect(markdown).toContain("&#33;&#91;track&#93;");
+    expect(markdown).not.toContain("![track](https://tracker.invalid/p)");
+    expect(markdown).not.toContain("[click](https://evil.invalid)");
   });
 
   it("toSummary returns 'no changes' / 'BREAKING N changes'", () => {

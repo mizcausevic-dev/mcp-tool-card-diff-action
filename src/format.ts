@@ -34,7 +34,12 @@ const REASON_LABEL: Record<ChangeReason, string> = {
 
 function tableCell(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
-    .replaceAll("|", "&#124;").replace(/[\r\n]+/gu, " ");
+    .replaceAll("\\", "&#92;").replaceAll("!", "&#33;")
+    .replaceAll("[", "&#91;").replaceAll("]", "&#93;")
+    .replaceAll("`", "&#96;").replaceAll("*", "&#42;")
+    .replaceAll("_", "&#95;").replaceAll("~", "&#126;")
+    .replaceAll("@", "&#64;").replaceAll("|", "&#124;")
+    .replace(/[\r\n]+/gu, " ");
 }
 
 export function toMarkdown(diff: ToolCardDiff): string {
