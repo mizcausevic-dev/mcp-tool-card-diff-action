@@ -25,6 +25,67 @@ function schemaChanged(prev, next, key) {
     const n = next[key];
     return JSON.stringify(p ?? null) !== JSON.stringify(n ?? null);
 }
+function testedWithMap(entries, side) {
+    const result = new Map();
+    if (entries !== undefined && !Array.isArray(entries))
+        throw new Error(`${side}.tested_with must be an array`);
+    for (const entry of entries ?? []) {
+        if (!entry || typeof entry !== "object")
+            throw new Error(`${side}.tested_with contains an invalid entry`);
+        let key;
+        let label;
+        let evidence;
+        if ("llm" in entry) {
+            if (typeof entry.llm !== "string" || typeof entry.test_suite_uri !== "string" ||
+                typeof entry.tested_at !== "string" || typeof entry.pass_rate !== "number" ||
+                !Number.isFinite(entry.pass_rate) || entry.pass_rate < 0 || entry.pass_rate > 1 ||
+                (entry.provider !== undefined && typeof entry.provider !== "string") ||
+                (entry.sample_size !== undefined && (!Number.isInteger(entry.sample_size) || entry.sample_size < 1))) {
+                throw new Error(`${side}.tested_with contains an invalid v0.1 entry`);
+            }
+            key = JSON.stringify(["v0.1", entry.provider ?? "", entry.llm, entry.test_suite_uri]);
+            label = `${entry.provider ? `${entry.provider}/` : ""}${entry.llm} @ ${entry.test_suite_uri}`;
+            evidence = { signature: JSON.stringify([entry.pass_rate, entry.tested_at, entry.sample_size ?? null]) };
+        }
+        else {
+            if (typeof entry.provider !== "string" || typeof entry.model !== "string" || typeof entry.passed !== "boolean") {
+                throw new Error(`${side}.tested_with contains an invalid legacy entry`);
+            }
+            key = JSON.stringify(["legacy", entry.provider, entry.model]);
+            label = `${entry.provider}/${entry.model}`;
+            evidence = { signature: JSON.stringify([entry.passed]), passed: entry.passed };
+        }
+        const group = result.get(key) ?? { label, entries: [] };
+        group.entries.push(evidence);
+        result.set(key, group);
+    }
+    return result;
+}
+function unmatchedEvidence(before, after) {
+    const available = new Map();
+    for (const entry of after)
+        available.set(entry.signature, (available.get(entry.signature) ?? 0) + 1);
+    const removed = [];
+    for (const entry of before) {
+        const count = available.get(entry.signature) ?? 0;
+        if (count > 0)
+            available.set(entry.signature, count - 1);
+        else
+            removed.push(entry);
+    }
+    const added = [];
+    for (const entry of after) {
+        const count = available.get(entry.signature) ?? 0;
+        if (count > 0) {
+            added.push(entry);
+            available.set(entry.signature, count - 1);
+        }
+    }
+    return { removed, added };
+}
+function auditLocations(card) {
+    return [...(card.audit.log_locations ?? []), ...(card.audit.log_uri ? [card.audit.log_uri] : [])];
+}
 /** Diff two MCP Tool Card documents and classify each change. */
 export function diffToolCards(previous, next, _opts = {}) {
     assertCard(previous, "previous");
@@ -96,23 +157,46 @@ export function diffToolCards(previous, next, _opts = {}) {
         push("output-schema-changed");
     }
     // ─── tested_with ───────────────────────────────────────────────────────
-    const prevProviders = new Map((previous.tested_with ?? []).map((t) => [`${t.provider}/${t.model}`, t]));
-    const nextProviders = new Map((next.tested_with ?? []).map((t) => [`${t.provider}/${t.model}`, t]));
-    const provDiff = diffSet([...prevProviders.keys()], [...nextProviders.keys()]);
-    for (const k of provDiff.removed)
-        push("tested-with-provider-removed", k);
-    for (const k of [...nextProviders.keys()]) {
-        const before = prevProviders.get(k);
-        const after = nextProviders.get(k);
-        if (before && after && before.passed && !after.passed) {
-            push("tested-with-newly-failing", k);
+    const prevProviders = testedWithMap(previous.tested_with, "previous");
+    const nextProviders = testedWithMap(next.tested_with, "next");
+    const testedAdded = [];
+    const testedRemoved = [];
+    for (const key of new Set([...prevProviders.keys(), ...nextProviders.keys()])) {
+        const before = prevProviders.get(key);
+        const after = nextProviders.get(key);
+        const label = before?.label ?? after?.label ?? key;
+        const unmatched = unmatchedEvidence(before?.entries ?? [], after?.entries ?? []);
+        // Without a run ID, equal-count substitutions are evidence updates. When
+        // counts differ, preserve every lost run as a removal rather than pairing
+        // it with an unrelated addition and silently weakening the breaking gate.
+        const replaced = (before?.entries.length ?? 0) === (after?.entries.length ?? 0)
+            ? Math.min(unmatched.removed.length, unmatched.added.length)
+            : 0;
+        for (let i = 0; i < replaced; i++) {
+            const oldEntry = unmatched.removed[i];
+            const newEntry = unmatched.added[i];
+            if (oldEntry.passed === true && newEntry.passed === false)
+                push("tested-with-newly-failing", label);
+            else
+                push("tested-with-evidence-changed", label);
+        }
+        const removedCount = unmatched.removed.length - replaced;
+        if (removedCount > 0) {
+            push("tested-with-provider-removed", `${label}${removedCount > 1 ? ` (${removedCount} entries)` : ""}`);
+            testedRemoved.push(...Array(removedCount).fill(label));
+        }
+        const addedCount = unmatched.added.length - replaced;
+        if (addedCount > 0) {
+            push("tested-with-entry-added", `${label}${addedCount > 1 ? ` (${addedCount} entries)` : ""}`);
+            testedAdded.push(...Array(addedCount).fill(label));
         }
     }
-    // Surface added providers via the returned set rather than as a flagged change.
-    const testedAdded = provDiff.added;
-    const testedRemoved = provDiff.removed;
+    testedAdded.sort();
+    testedRemoved.sort();
     // ─── audit ─────────────────────────────────────────────────────────────
-    const auditLogs = diffSet(previous.audit?.log_locations, next.audit?.log_locations);
+    const auditLogs = diffSet(auditLocations(previous), auditLocations(next));
+    for (const s of auditLogs.added)
+        push("audit-log-location-added", s);
     for (const s of auditLogs.removed)
         push("audit-log-location-removed", s);
     if (previous.audit?.retention_days !== undefined &&
@@ -147,4 +231,6 @@ function assertCard(card, side) {
         throw new Error(`${side}.safety is required`);
     if (!card.schema)
         throw new Error(`${side}.schema is required`);
+    if (!card.audit)
+        throw new Error(`${side}.audit is required`);
 }

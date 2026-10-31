@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { run, type RunnerEnv } from "../src/runner.js";
@@ -12,6 +15,17 @@ const V2_NONBREAKING = `${here}/../fixtures/card-v2-nonbreaking.json`;
 const V1_CONTENT = readFileSync(V1, "utf8");
 const V2_BREAKING_CONTENT = readFileSync(V2_BREAKING, "utf8");
 const V2_NONBREAKING_CONTENT = readFileSync(V2_NONBREAKING, "utf8");
+// Copied from mcp-tool-card-spec/examples/billing-lookup.json (v0.1 schema).
+const OFFICIAL_SPEC_CARD = readFileSync(`${here}/../fixtures/official-billing-lookup.json`, "utf8");
+const BASE_SHA = "a".repeat(40);
+const OVERRIDE_SHA = "b".repeat(40);
+
+function removeTestDir(path: string): void {
+  const root = resolve(tmpdir());
+  const target = resolve(path);
+  if (!target.startsWith(root + "\\") && !target.startsWith(root + "/")) throw new Error("unsafe test cleanup path");
+  rmSync(target, { recursive: true, force: true });
+}
 
 function makeEnv(opts: {
   cardPath?: string;
@@ -35,7 +49,7 @@ function makeEnv(opts: {
   if (opts.failOnBreaking !== undefined) inputs.fail_on_breaking = opts.failOnBreaking;
   if (opts.failOnAnyChange !== undefined) inputs.fail_on_any_change = opts.failOnAnyChange;
   if (opts.baseSha !== undefined) inputs.base_sha = opts.baseSha;
-  else if (!opts.omitBaseSha && !opts.isPullRequest) inputs.base_sha = "abc123";
+  else if (!opts.omitBaseSha && !opts.isPullRequest) inputs.base_sha = BASE_SHA;
   if (opts.hasToken) inputs.github_token = "ghs_test";
 
   const env: RunnerEnv = {
@@ -51,7 +65,7 @@ function makeEnv(opts: {
     env.GITHUB_EVENT_PATH = `${here}/event.json`;
     env.readFile = (p) => {
       if (p === cardPath) return cardContent;
-      if (p.endsWith("event.json")) return JSON.stringify({ number: 42, pull_request: { number: 42, base: { sha: "abc123" } } });
+      if (p.endsWith("event.json")) return JSON.stringify({ number: 42, pull_request: { number: 42, base: { sha: BASE_SHA } } });
       return "{}";
     };
     env.exists = (p) => p === cardPath || p.endsWith("event.json");
@@ -83,16 +97,111 @@ describe("runner.run", () => {
     expect(r.exitCode).toBe(1);
   });
 
-  it("treats missing previous version as 'new card' and exits 0", async () => {
-    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: null, omitBaseSha: true }));
+  it("treats a card absent from a verified base commit as new", async () => {
+    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: null }));
     expect(r.exitCode).toBe(0);
     expect(r.newCard).toBe(true);
   });
 
-  it("treats malformed previous version as 'new card' (warns but continues)", async () => {
-    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: "not-json", baseSha: "abc" }));
+  it("fails closed when the previous card is malformed", async () => {
+    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: "not-json" }));
+    expect(r.exitCode).toBe(1);
+    expect(r.newCard).toBe(false);
+    expect(r.reason).toBe("invalid base card");
+  });
+
+  it("does not mistake JSON null at the base commit for a new card", async () => {
+    const r = await run(makeEnv({ cardContent: V1_CONTENT, prevContent: "null" }));
+    expect(r.exitCode).toBe(1);
+    expect(r.newCard).toBe(false);
+    expect(r.reason).toBe("invalid base card");
+  });
+
+  it("does not pass a newly added card whose JSON is null or lacks safety fields", async () => {
+    for (const current of ["null", "{}", JSON.stringify({ tool_card_version: "0.1", tool: {}, schema: {}, safety: {}, audit: {} })]) {
+      const r = await run(makeEnv({ cardContent: current, prevContent: null }));
+      expect(r.exitCode).toBe(1);
+      expect(r.newCard).toBe(false);
+      expect(r.reason).toBe("invalid current card");
+    }
+  });
+
+  it("accepts the published Tool Card spec example as a newly added card", async () => {
+    const r = await run(makeEnv({ cardContent: OFFICIAL_SPEC_CARD, prevContent: null }));
     expect(r.exitCode).toBe(0);
     expect(r.newCard).toBe(true);
+  });
+
+  it("fails the gate when one official LLM result is removed", async () => {
+    const after = JSON.parse(OFFICIAL_SPEC_CARD) as { tested_with: Array<{ llm: string }> };
+    after.tested_with = after.tested_with.filter((entry) => entry.llm !== "claude-sonnet-4-6");
+    const r = await run(makeEnv({ cardContent: JSON.stringify(after), prevContent: OFFICIAL_SPEC_CARD }));
+    expect(r.exitCode).toBe(1);
+    expect(r.newCard).toBe(false);
+    expect(r.diff?.breaking).toBe(true);
+    expect(r.diff?.changes).toContainEqual(expect.objectContaining({ reason: "tested-with-provider-removed" }));
+  });
+
+  it("lets strict mode gate a changed official pass rate without calling it breaking", async () => {
+    const after = JSON.parse(OFFICIAL_SPEC_CARD) as { tested_with: Array<{ pass_rate: number }> };
+    after.tested_with[0].pass_rate = 0.75;
+    const r = await run(makeEnv({ cardContent: JSON.stringify(after), prevContent: OFFICIAL_SPEC_CARD, failOnAnyChange: "true" }));
+    expect(r.exitCode).toBe(1);
+    expect(r.diff?.breaking).toBe(false);
+    expect(r.diff?.changes).toContainEqual(expect.objectContaining({ reason: "tested-with-evidence-changed" }));
+  });
+
+  it("fails closed when the base SHA is missing or contains command syntax", async () => {
+    const missing = await run(makeEnv({ cardContent: V1_CONTENT, omitBaseSha: true }));
+    const injected = await run(makeEnv({ cardContent: V1_CONTENT, baseSha: `${BASE_SHA}&echo unsafe` }));
+    expect(missing.exitCode).toBe(1);
+    expect(injected.exitCode).toBe(1);
+    expect(injected.reason).toBe("invalid base SHA");
+  });
+
+  it("rejects a card path that could escape the checked-out repository", async () => {
+    const env = makeEnv({ cardPath: "../outside.json", cardContent: V1_CONTENT });
+    let readAttempted = false;
+    env.exists = () => { readAttempted = true; return true; };
+    const r = await run(env);
+    expect(r.exitCode).toBe(1);
+    expect(r.reason).toBe("invalid card-path");
+    expect(readAttempted).toBe(false);
+  });
+
+  it("rejects a directory as the card input before reading", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "kg-tool-card-dir-"));
+    try {
+      mkdirSync(join(repo, "cards"));
+      const result = await run({
+        inputs: { card_path: "cards", base_sha: BASE_SHA },
+        GITHUB_WORKSPACE: repo,
+        write: () => undefined
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.reason).toBe("invalid card file");
+    } finally {
+      removeTestDir(repo);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a card symlink that points outside the workspace", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "kg-tool-card-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "kg-tool-card-outside-"));
+    try {
+      writeFileSync(join(outside, "secret.json"), V1_CONTENT);
+      symlinkSync(join(outside, "secret.json"), join(repo, "card.json"));
+      const result = await run({
+        inputs: { card_path: "card.json", base_sha: BASE_SHA },
+        GITHUB_WORKSPACE: repo,
+        write: () => undefined
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.reason).toBe("invalid card file");
+    } finally {
+      removeTestDir(repo);
+      removeTestDir(outside);
+    }
   });
 
   it("rejects when card-path input is missing", async () => {
@@ -123,10 +232,10 @@ describe("runner.run", () => {
 
   it("uses base-sha input override when provided", async () => {
     let observedSha = "";
-    const env = makeEnv({ cardContent: V1_CONTENT, prevContent: V1_CONTENT, baseSha: "override-sha" });
+    const env = makeEnv({ cardContent: V1_CONTENT, prevContent: V1_CONTENT, baseSha: OVERRIDE_SHA });
     env.gitShow = (sha) => { observedSha = sha; return V1_CONTENT; };
     await run(env);
-    expect(observedSha).toBe("override-sha");
+    expect(observedSha).toBe(OVERRIDE_SHA);
   });
 
   it("reads base.sha from pull_request event payload when no input override", async () => {
@@ -134,7 +243,7 @@ describe("runner.run", () => {
     const env = makeEnv({ cardContent: V1_CONTENT, prevContent: V1_CONTENT, isPullRequest: true });
     env.gitShow = (sha) => { observedSha = sha; return V1_CONTENT; };
     await run(env);
-    expect(observedSha).toBe("abc123");
+    expect(observedSha).toBe(BASE_SHA);
   });
 
   it("skips PR comment when token is missing", async () => {
@@ -147,7 +256,7 @@ describe("runner.run", () => {
 
   it("skips PR comment when GITHUB_EVENT_PATH missing", async () => {
     const env: RunnerEnv = {
-      inputs: { card_path: "x.json", comment_on_pr: "true", github_token: "ghs", fail_on_breaking: "false" },
+      inputs: { card_path: "x.json", base_sha: BASE_SHA, comment_on_pr: "true", github_token: "ghs", fail_on_breaking: "false" },
       GITHUB_REPOSITORY: "x/y",
       readFile: () => V1_CONTENT,
       exists: (p) => p === "x.json",
@@ -161,7 +270,7 @@ describe("runner.run", () => {
 
   it("does not comment on non-PR events with comment_on_pr=auto", async () => {
     const env: RunnerEnv = {
-      inputs: { card_path: "x.json", comment_on_pr: "auto", github_token: "ghs", fail_on_breaking: "false" },
+      inputs: { card_path: "x.json", base_sha: BASE_SHA, comment_on_pr: "auto", github_token: "ghs", fail_on_breaking: "false" },
       GITHUB_EVENT_NAME: "push",
       readFile: () => V1_CONTENT,
       exists: (p) => p === "x.json",
@@ -170,5 +279,38 @@ describe("runner.run", () => {
     };
     const r = await run(env);
     expect(r.commentPosted).toBe(false);
+  });
+
+  it("reads a literal ampersand path without a shell and fails closed on an unavailable base commit", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "kg-tool-card-diff-"));
+    const cardPath = "cards/card&echo unsafe.json";
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: repo });
+      mkdirSync(join(repo, "cards"));
+      writeFileSync(join(repo, cardPath), V1_CONTENT);
+      execFileSync("git", ["add", "--", cardPath], { cwd: repo });
+      execFileSync("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base card"], { cwd: repo });
+      const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+      const env: RunnerEnv = {
+        inputs: { card_path: cardPath, base_sha: sha, comment_on_pr: "false" },
+        GITHUB_WORKSPACE: repo,
+        readFile: () => V2_BREAKING_CONTENT,
+        exists: (path) => path === cardPath,
+        write: () => undefined
+      };
+      const result = await run(env);
+      expect(result.exitCode).toBe(1);
+      expect(result.newCard).toBe(false);
+      expect(result.diff?.breaking).toBe(true);
+      expect(existsSync(join(repo, "unsafe.json"))).toBe(false);
+
+      env.inputs.base_sha = "f".repeat(40);
+      const missingCommit = await run(env);
+      expect(missingCommit.exitCode).toBe(1);
+      expect(missingCommit.newCard).toBe(false);
+      expect(missingCommit.reason).toBe("base card lookup failed");
+    } finally {
+      removeTestDir(repo);
+    }
   });
 });

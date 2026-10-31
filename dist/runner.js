@@ -1,5 +1,6 @@
-import { execSync } from "node:child_process";
-import { readFileSync, appendFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync, appendFileSync, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { diffToolCards } from "./diff.js";
 import { toMarkdown } from "./format.js";
 const NULL_DIFF = {
@@ -8,13 +9,58 @@ const NULL_DIFF = {
     added: { externalSystems: [], refusalModes: [], testedProviders: [], auditLogs: [] },
     removed: { externalSystems: [], refusalModes: [], testedProviders: [], auditLogs: [] }
 };
-function defaultGitShow(sha, path) {
-    try {
-        return execSync(`git show ${sha}:${path}`, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    }
-    catch {
+function defaultGitShow(sha, path, cwd) {
+    const options = { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] };
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], options);
+    const paths = execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", sha, "--", path], options);
+    if (!paths.split("\0").includes(path))
         return null;
-    }
+    return execFileSync("git", ["show", `${sha}:${path}`], options);
+}
+function validCardPath(path) {
+    return !path.startsWith("/") && !path.includes("\\") && !path.includes(":") &&
+        !Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) &&
+        path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function isStringArray(value) {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+/** Check fields consumed by the diff; this is not a full Tool Card schema validator. */
+function isDiffableToolCard(value) {
+    if (!isRecord(value) || !isRecord(value.tool) || !isRecord(value.schema) ||
+        !isRecord(value.safety) || !isRecord(value.audit))
+        return false;
+    const tool = value.tool;
+    const safety = value.safety;
+    const audit = value.audit;
+    if (typeof value.tool_card_version !== "string" ||
+        !["server_id", "name", "version", "mcp_server_uri", "description"].every((key) => typeof tool[key] === "string") ||
+        !["read", "mutating", "external", "destructive"].includes(String(safety.side_effect_class)) ||
+        !["none", "low", "medium", "high"].includes(String(safety.pii_exposure)) ||
+        !["none", "reads_secret_material", "writes_secret_material", "handles_keys"].includes(String(safety.secrets_exposure)) ||
+        !["reversible", "rate_limited", "human_approval_required"].every((key) => typeof safety[key] === "boolean"))
+        return false;
+    if (safety.external_systems !== undefined && !isStringArray(safety.external_systems))
+        return false;
+    if (safety.refusal_modes !== undefined && !isStringArray(safety.refusal_modes))
+        return false;
+    if (audit.log_locations !== undefined && !isStringArray(audit.log_locations))
+        return false;
+    if (audit.retention_days !== undefined && (typeof audit.retention_days !== "number" || !Number.isFinite(audit.retention_days)))
+        return false;
+    return value.tested_with === undefined || (Array.isArray(value.tested_with) && value.tested_with.every(isRecord));
+}
+function cardFileWithinWorkspace(path, workspace) {
+    const root = realpathSync(workspace);
+    const file = resolve(root, path);
+    if (!existsSync(file) || lstatSync(file).isSymbolicLink() || !statSync(file).isFile())
+        return false;
+    const relativePath = relative(root, realpathSync(file));
+    return relativePath !== "" && relativePath !== ".." && !relativePath.startsWith("../") &&
+        !relativePath.startsWith("..\\") && !isAbsolute(relativePath);
 }
 export async function run(env) {
     const cardPath = required(env.inputs, "card_path");
@@ -25,11 +71,21 @@ export async function run(env) {
     const token = env.inputs.github_token ?? "";
     const read = env.readFile ?? ((p) => readFileSync(p, "utf8"));
     const exists = env.exists ?? ((p) => existsSync(p));
-    const gitShow = env.gitShow ?? defaultGitShow;
+    const workspace = env.GITHUB_WORKSPACE ?? process.cwd();
+    const cardLocation = env.readFile || env.exists ? cardPath : resolve(workspace, cardPath);
+    const gitShow = env.gitShow ?? ((sha, path) => defaultGitShow(sha, path, env.GITHUB_WORKSPACE));
     const write = env.write ?? ((line) => process.stdout.write(`${line}\n`));
-    if (!exists(cardPath)) {
+    if (!validCardPath(cardPath)) {
+        write("::error::card-path must be a relative repository path without traversal or control characters.");
+        return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid card-path" };
+    }
+    if (!exists(cardLocation)) {
         write(`::error::card-path "${cardPath}" does not exist on disk.`);
         return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "card-path not found" };
+    }
+    if (!env.readFile && !env.exists && !cardFileWithinWorkspace(cardPath, workspace)) {
+        write("::error::card-path must resolve to a regular file within the workspace.");
+        return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid card file" };
     }
     // Resolve base SHA: explicit input wins, otherwise read from event payload.
     let baseSha = baseShaInput;
@@ -42,21 +98,42 @@ export async function run(env) {
             // ignore — fall through
         }
     }
+    if (!/^[0-9a-f]{40}$/iu.test(baseSha)) {
+        write("::error::a full 40-character base commit SHA is required to compare a Tool Card.");
+        return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid base SHA" };
+    }
     let prev = null;
     let prevRaw = null;
-    if (baseSha)
+    try {
         prevRaw = gitShow(baseSha, cardPath);
+    }
+    catch {
+        write("::error::could not read the Tool Card at the base commit; verify checkout history and card-path.");
+        return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "base card lookup failed" };
+    }
     if (prevRaw !== null) {
         try {
-            prev = JSON.parse(prevRaw);
+            const parsed = JSON.parse(prevRaw);
+            if (!isDiffableToolCard(parsed))
+                throw new Error("invalid Tool Card shape");
+            prev = parsed;
         }
-        catch (e) {
-            write(`::warning::could not parse previous ToolCard at ${baseSha}:${cardPath} — treating as new card. (${e.message})`);
-            prev = null;
+        catch {
+            write("::error::the Tool Card at the base commit is malformed; comparison cannot be trusted.");
+            return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid base card" };
         }
     }
-    const nextRaw = read(cardPath);
-    const next = JSON.parse(nextRaw);
+    let next;
+    try {
+        const parsed = JSON.parse(read(cardLocation));
+        if (!isDiffableToolCard(parsed))
+            throw new Error("invalid Tool Card shape");
+        next = parsed;
+    }
+    catch {
+        write("::error::the current Tool Card is malformed; comparison cannot be trusted.");
+        return { exitCode: 1, diff: null, newCard: false, commentPosted: false, reason: "invalid current card" };
+    }
     const newCard = prev === null;
     const diff = newCard ? NULL_DIFF : diffToolCards(prev, next);
     const markdown = newCard

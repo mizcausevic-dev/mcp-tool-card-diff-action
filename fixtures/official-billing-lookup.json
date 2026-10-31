@@ -1,0 +1,53 @@
+{
+  "tool_card_version": "0.1",
+  "tool": {
+    "server_id": "kg-billing-mcp",
+    "name": "billing-lookup",
+    "version": "1.4.0",
+    "mcp_server_uri": "https://billing.kineticgain.com/mcp",
+    "description": "Looks up a customer's current invoice, plan tier, and usage-to-date. Read-only. Returns redacted card information; never returns full PAN."
+  },
+  "schema": {
+    "input_schema_inline": {
+      "type": "object",
+      "required": ["customer_id"],
+      "additionalProperties": false,
+      "properties": {
+        "customer_id": { "type": "string", "pattern": "^cus_[A-Za-z0-9]+$" },
+        "include_usage": { "type": "boolean", "default": false }
+      }
+    },
+    "output_schema_uri": "https://billing.kineticgain.com/schemas/invoice-summary.json"
+  },
+  "safety": {
+    "side_effect_class": "read",
+    "external_systems": ["stripe-api"],
+    "reversible": true,
+    "rate_limited": true,
+    "pii_exposure": "low",
+    "secrets_exposure": "none",
+    "human_approval_required": false,
+    "refusal_modes": ["cross_tenant_access", "rate_limit_exceeded"]
+  },
+  "tested_with": [
+    { "llm": "claude-opus-4-7", "provider": "Anthropic", "test_suite_uri": "https://eval.kineticgain.com/suites/mcp-billing-v2", "pass_rate": 0.98, "tested_at": "2026-05-08T10:00:00Z", "sample_size": 250 },
+    { "llm": "claude-sonnet-4-6", "provider": "Anthropic", "test_suite_uri": "https://eval.kineticgain.com/suites/mcp-billing-v2", "pass_rate": 0.96, "tested_at": "2026-05-08T10:30:00Z", "sample_size": 250 },
+    { "llm": "gpt-4o-2024-08-06", "provider": "OpenAI", "test_suite_uri": "https://eval.kineticgain.com/suites/mcp-billing-v2", "pass_rate": 0.93, "tested_at": "2026-05-08T11:00:00Z", "sample_size": 250 }
+  ],
+  "performance": {
+    "p50_latency_ms": 120,
+    "p99_latency_ms": 580,
+    "measurement_window": "last_7d"
+  },
+  "cost": {
+    "per_call_amount": 0.0008,
+    "per_call_currency": "USD",
+    "notes": "Includes Stripe API call cost; amortized across burst capacity."
+  },
+  "audit": {
+    "log_uri": "https://audit.kineticgain.com/mcp/billing-lookup",
+    "retention_days": 365,
+    "signed_by": "kg-billing-mcp",
+    "incident_response_uri": "https://kineticgain.com/security/report"
+  }
+}

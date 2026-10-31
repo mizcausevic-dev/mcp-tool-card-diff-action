@@ -13,13 +13,35 @@ export interface ToolCardSafety {
 }
 export interface ToolCardPerformance {
     p50_latency_ms?: number;
+    p99_latency_ms?: number;
+    measurement_window?: string;
+    /** Legacy disclosure field retained for existing callers. */
     p95_latency_ms?: number;
     max_concurrency?: number;
 }
 export interface ToolCardCost {
+    per_call_amount?: number;
+    per_call_currency?: string;
+    notes?: string;
+    /** Legacy disclosure fields retained for existing callers. */
     pricing_model?: string;
     per_call_cost_usd?: number;
     monthly_budget_usd?: number;
+}
+/** Published mcp-tool-card-spec v0.1 tested-with entry. */
+export interface ToolCardTestResult {
+    llm: string;
+    provider?: string;
+    test_suite_uri: string;
+    pass_rate: number;
+    tested_at: string;
+    sample_size?: number;
+}
+/** Legacy entry supported while existing callers migrate to the spec. */
+export interface LegacyToolCardTestResult {
+    provider: string;
+    model: string;
+    passed: boolean;
 }
 export interface ToolCard {
     tool_card_version: string;
@@ -37,19 +59,18 @@ export interface ToolCard {
         output_schema_inline?: Record<string, unknown>;
     };
     safety: ToolCardSafety;
-    tested_with?: Array<{
-        provider: string;
-        model: string;
-        passed: boolean;
-    }>;
+    tested_with?: Array<ToolCardTestResult | LegacyToolCardTestResult>;
     performance?: ToolCardPerformance;
     cost?: ToolCardCost;
     audit: {
+        log_uri?: string;
         log_locations?: string[];
         retention_days?: number;
+        signed_by?: string;
+        incident_response_uri?: string;
     };
 }
-export type ChangeReason = "card-version-changed" | "tool-version-changed" | "tool-description-changed" | "mcp-server-uri-changed" | "side-effect-class-escalated" | "side-effect-class-relaxed" | "reversible-flipped-false" | "reversible-flipped-true" | "rate-limit-removed" | "rate-limit-added" | "pii-exposure-escalated" | "pii-exposure-relaxed" | "secrets-exposure-escalated" | "secrets-exposure-relaxed" | "human-approval-removed" | "human-approval-added" | "external-system-added" | "external-system-removed" | "refusal-mode-added" | "refusal-mode-removed" | "input-schema-changed" | "output-schema-changed" | "tested-with-provider-removed" | "tested-with-newly-failing" | "audit-log-location-removed" | "audit-retention-reduced";
+export type ChangeReason = "card-version-changed" | "tool-version-changed" | "tool-description-changed" | "mcp-server-uri-changed" | "side-effect-class-escalated" | "side-effect-class-relaxed" | "reversible-flipped-false" | "reversible-flipped-true" | "rate-limit-removed" | "rate-limit-added" | "pii-exposure-escalated" | "pii-exposure-relaxed" | "secrets-exposure-escalated" | "secrets-exposure-relaxed" | "human-approval-removed" | "human-approval-added" | "external-system-added" | "external-system-removed" | "refusal-mode-added" | "refusal-mode-removed" | "input-schema-changed" | "output-schema-changed" | "tested-with-provider-removed" | "tested-with-entry-added" | "tested-with-newly-failing" | "tested-with-evidence-changed" | "audit-log-location-added" | "audit-log-location-removed" | "audit-retention-reduced";
 /**
  * Reasons that invalidate a downstream operator's prior trust assumptions —
  * a procurement / security reviewer needs to re-approve before consumers ship.

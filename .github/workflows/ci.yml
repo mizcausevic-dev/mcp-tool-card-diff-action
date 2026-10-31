@@ -24,3 +24,97 @@ jobs:
       - run: npm run coverage
       - run: npm run build
       - run: npm audit --audit-level=high
+
+  action-fixture:
+    name: action fixture (pull request)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Unchanged card passes
+        id: unchanged
+        uses: ./
+        with:
+          card-path: fixtures/card-v1.json
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          comment-on-pr: 'false'
+      - name: Check unchanged outputs
+        env:
+          CHANGES: ${{ steps.unchanged.outputs['change-count'] }}
+          BREAKING: ${{ steps.unchanged.outputs.breaking }}
+          NEW_CARD: ${{ steps.unchanged.outputs['new-card'] }}
+        run: test "$CHANGES" = '0' && test "$BREAKING" = 'false' && test "$NEW_CARD" = 'false'
+      - name: Missing base commit fails closed
+        id: missing_base
+        continue-on-error: true
+        uses: ./
+        with:
+          card-path: fixtures/card-v1.json
+          base-sha: '0000000000000000000000000000000000000000'
+          comment-on-pr: 'false'
+      - name: Check missing base failure
+        env:
+          OUTCOME: ${{ steps.missing_base.outcome }}
+        run: test "$OUTCOME" = 'failure'
+      - name: Make synthetic breaking edit
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const path = "fixtures/card-v1.json";
+            const card = JSON.parse(readFileSync(path, "utf8"));
+            card.tested_with[0].passed = false;
+            writeFileSync(path, `${JSON.stringify(card, null, 2)}\n`);
+          '
+      - name: Breaking card fails the gate
+        id: breaking
+        continue-on-error: true
+        uses: ./
+        with:
+          card-path: fixtures/card-v1.json
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          comment-on-pr: 'false'
+      - name: Check breaking failure and outputs
+        env:
+          OUTCOME: ${{ steps.breaking.outcome }}
+          BREAKING: ${{ steps.breaking.outputs.breaking }}
+          CHANGES: ${{ steps.breaking.outputs['change-count'] }}
+          NEW_CARD: ${{ steps.breaking.outputs['new-card'] }}
+        run: test "$OUTCOME" = 'failure' && test "$BREAKING" = 'true' && test "$CHANGES" = '1' && test "$NEW_CARD" = 'false'
+      - name: Create local published-schema baseline
+        id: official_base
+        run: |
+          cp fixtures/official-billing-lookup.json fixtures/action-e2e-card.json
+          git add fixtures/action-e2e-card.json
+          git -c user.name='CI fixture' -c user.email='ci-fixture@example.invalid' commit -qm 'Create local Tool Card fixture baseline'
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Remove one official model evaluation
+        run: |
+          node --input-type=module -e '
+            import { readFileSync, writeFileSync } from "node:fs";
+            const path = "fixtures/action-e2e-card.json";
+            const card = JSON.parse(readFileSync(path, "utf8"));
+            card.tested_with = card.tested_with.filter((entry) => entry.llm !== "claude-sonnet-4-6");
+            writeFileSync(path, `${JSON.stringify(card, null, 2)}\n`);
+          '
+      - name: Lost official evaluation fails the gate
+        id: official_breaking
+        continue-on-error: true
+        uses: ./
+        with:
+          card-path: fixtures/action-e2e-card.json
+          base-sha: ${{ steps.official_base.outputs.sha }}
+          comment-on-pr: 'false'
+      - name: Check official evaluation failure
+        env:
+          OUTCOME: ${{ steps.official_breaking.outcome }}
+          BREAKING: ${{ steps.official_breaking.outputs.breaking }}
+          CHANGES: ${{ steps.official_breaking.outputs['change-count'] }}
+          NEW_CARD: ${{ steps.official_breaking.outputs['new-card'] }}
+        run: test "$OUTCOME" = 'failure' && test "$BREAKING" = 'true' && test "$CHANGES" = '1' && test "$NEW_CARD" = 'false'
