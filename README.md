@@ -32,14 +32,14 @@ jobs:
           fail-on-breaking: true
 ```
 
-> **Important:** Your `checkout` step must use `fetch-depth: 0` so the Action can resolve the base SHA. Otherwise the previous version retrieval returns null and the diff is reported as "new card".
+> **Important:** Your `checkout` step must use `fetch-depth: 0` so the Action can resolve the full base commit SHA. If the commit is unavailable, the gate fails; it does not report a false "new card".
 
 ## Inputs
 
 | input               | required | default       | description |
 |---|---|---|---|
 | `card-path`         | ✓        | —             | Path (relative to repo root) to the MCP Tool Card JSON file being changed. |
-| `base-sha`          |          | `pull_request.base.sha` | Override the base SHA. |
+| `base-sha`          |          | `pull_request.base.sha` | Override with a full 40-character base commit SHA. Required outside a PR event. |
 | `comment-on-pr`     |          | `auto`        | `auto` posts only on `pull_request` events. |
 | `fail-on-breaking`  |          | `true`        | Fail when the diff is BREAKING. |
 | `fail-on-any-change`|          | `false`       | Fail on ANY diff (frozen-card workflow). |
@@ -59,8 +59,9 @@ Same change reasons as [`mcp-tool-card-diff`](https://github.com/mizcausevic-dev
 
 ## How it handles edge cases
 
-- **New card** (file didn't exist at base SHA) → no diff, exits 0, sets `new-card=true`.
-- **Malformed previous version** → warns and treats as new card.
+- **New card** (file absent from a verified base commit) → no diff, exits 0, sets `new-card=true`.
+- **Malformed previous version, missing base commit, or invalid SHA** → fails closed.
+- **Invalid or escaping card path** → fails before reading the file.
 - **Card-path doesn't exist on disk** → exits 1 with a clear error.
 - **Non-PR context** (push, manual dispatch) → skips PR comment; still emits diff to logs.
 

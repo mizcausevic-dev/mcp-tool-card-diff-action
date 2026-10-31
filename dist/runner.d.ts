@@ -5,6 +5,7 @@ export interface RunnerEnv {
     GITHUB_EVENT_NAME?: string;
     GITHUB_REPOSITORY?: string;
     GITHUB_EVENT_PATH?: string;
+    GITHUB_WORKSPACE?: string;
     /** Read a file from disk (current HEAD). Defaults to fs.readFileSync. */
     readFile?: (path: string) => string;
     /** Predicate: does this path exist on disk? Defaults to fs.existsSync. */
@@ -12,7 +13,8 @@ export interface RunnerEnv {
     /**
      * Retrieve a file at a given git commit. Returns the file content if the
      * file existed at that commit, or `null` if it didn't (newly added file).
-     * Defaults to `git show <sha>:<path>` and treats non-zero exit as "missing".
+     * Defaults to argument-array Git calls. Only a path absent from a verified
+     * base commit is treated as a new card; other Git failures stop the gate.
      */
     gitShow?: (sha: string, path: string) => string | null;
     /** Stubbed PR-comment poster for tests. */

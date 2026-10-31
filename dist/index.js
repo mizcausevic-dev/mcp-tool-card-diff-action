@@ -14,7 +14,8 @@ run({
     GITHUB_OUTPUT: process.env.GITHUB_OUTPUT,
     GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
     GITHUB_REPOSITORY: process.env.GITHUB_REPOSITORY,
-    GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH
+    GITHUB_EVENT_PATH: process.env.GITHUB_EVENT_PATH,
+    GITHUB_WORKSPACE: process.env.GITHUB_WORKSPACE
 }).then((r) => process.exit(r.exitCode), (e) => {
     process.stderr.write(`::error::${e.message}\n`);
     process.exit(1);
