@@ -23,11 +23,19 @@ const REASON_LABEL: Record<ChangeReason, string> = {
   "refusal-mode-removed": "Refusal mode removed",
   "input-schema-changed": "Input schema changed",
   "output-schema-changed": "Output schema changed",
-  "tested-with-provider-removed": "Tested-with provider removed",
+  "tested-with-provider-removed": "Tested-with model/eval removed",
+  "tested-with-entry-added": "Tested-with model/eval added",
   "tested-with-newly-failing": "Tested-with newly failing",
+  "tested-with-evidence-changed": "Tested-with evidence changed",
+  "audit-log-location-added": "Audit log location added",
   "audit-log-location-removed": "Audit log location removed",
   "audit-retention-reduced": "Audit retention window reduced"
 };
+
+function tableCell(value: string): string {
+  return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll("|", "&#124;").replace(/[\r\n]+/gu, " ");
+}
 
 export function toMarkdown(diff: ToolCardDiff): string {
   if (diff.changes.length === 0) return `**No changes.** Tool cards are equivalent.`;
@@ -37,7 +45,7 @@ export function toMarkdown(diff: ToolCardDiff): string {
   lines.push(`| change | detail |`);
   lines.push(`|---|---|`);
   for (const c of diff.changes) {
-    lines.push(`| ${REASON_LABEL[c.reason] ?? c.reason} | ${c.detail ?? ""} |`);
+    lines.push(`| ${tableCell(REASON_LABEL[c.reason] ?? c.reason)} | ${tableCell(c.detail ?? "")} |`);
   }
   return lines.join("\n");
 }

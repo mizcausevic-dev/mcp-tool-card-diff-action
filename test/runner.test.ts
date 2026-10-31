@@ -132,6 +132,25 @@ describe("runner.run", () => {
     expect(r.newCard).toBe(true);
   });
 
+  it("fails the gate when one official LLM result is removed", async () => {
+    const after = JSON.parse(OFFICIAL_SPEC_CARD) as { tested_with: Array<{ llm: string }> };
+    after.tested_with = after.tested_with.filter((entry) => entry.llm !== "claude-sonnet-4-6");
+    const r = await run(makeEnv({ cardContent: JSON.stringify(after), prevContent: OFFICIAL_SPEC_CARD }));
+    expect(r.exitCode).toBe(1);
+    expect(r.newCard).toBe(false);
+    expect(r.diff?.breaking).toBe(true);
+    expect(r.diff?.changes).toContainEqual(expect.objectContaining({ reason: "tested-with-provider-removed" }));
+  });
+
+  it("lets strict mode gate a changed official pass rate without calling it breaking", async () => {
+    const after = JSON.parse(OFFICIAL_SPEC_CARD) as { tested_with: Array<{ pass_rate: number }> };
+    after.tested_with[0].pass_rate = 0.75;
+    const r = await run(makeEnv({ cardContent: JSON.stringify(after), prevContent: OFFICIAL_SPEC_CARD, failOnAnyChange: "true" }));
+    expect(r.exitCode).toBe(1);
+    expect(r.diff?.breaking).toBe(false);
+    expect(r.diff?.changes).toContainEqual(expect.objectContaining({ reason: "tested-with-evidence-changed" }));
+  });
+
   it("fails closed when the base SHA is missing or contains command syntax", async () => {
     const missing = await run(makeEnv({ cardContent: V1_CONTENT, omitBaseSha: true }));
     const injected = await run(makeEnv({ cardContent: V1_CONTENT, baseSha: `${BASE_SHA}&echo unsafe` }));

@@ -57,6 +57,8 @@ jobs:
 
 Same change reasons as [`mcp-tool-card-diff`](https://github.com/mizcausevic-dev/mcp-tool-card-diff) — breaking reasons include `side-effect-class-escalated`, `pii-exposure-escalated`, `secrets-exposure-escalated`, `human-approval-removed`, `external-system-added`, `refusal-mode-removed`, `input-schema-changed`, `tested-with-provider-removed`, `audit-log-location-removed`, `audit-retention-reduced`, and more.
 
+For published Tool Card v0.1 entries, the gate distinguishes provider, LLM, and test-suite URI and counts repeated test runs. Lost evidence is breaking; equal-count pass-rate, timestamp, or sample-size edits are reported as nonbreaking changes because the spec defines no run ID or diff threshold. `fail-on-any-change: true` also gates those evidence edits and additions. The older `provider/model/passed` entry shape remains supported during migration.
+
 ## How it handles edge cases
 
 - **New card** (file absent from a verified base commit) → no diff, exits 0, sets `new-card=true`.
